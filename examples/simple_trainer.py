@@ -31,7 +31,10 @@ from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 from typing_extensions import Literal, assert_never
 from utils import AppearanceOptModule, CameraOptModule, knn, rgb_to_sh, set_random_seed
 
-from gsplat import export_splats
+import sys
+
+sys.path.append("/data/naveen_ankit_phd/nerfstudio/gsplat")
+from gsplat.exporter import export_splats
 from gsplat.compression import PngCompression
 from gsplat.distributed import cli
 from gsplat.optimizers import SelectiveAdam
@@ -40,6 +43,9 @@ from gsplat.strategy import DefaultStrategy, MCMCStrategy
 from gsplat.utils import save_ply
 from gsplat_viewer import GsplatViewer, GsplatRenderTabState
 from nerfview import CameraState, RenderTabState, apply_float_colormap
+
+import ipdb
+from gsplat.cuda._wrapper import spherical_harmonics
 
 
 @dataclass
@@ -79,9 +85,10 @@ class Config:
     steps_scaler: float = 1.0
 
     # Number of training steps
-    max_steps: int = 30_000
+    max_steps: int = 7_000
     # Steps to evaluate the model
-    eval_steps: List[int] = field(default_factory=lambda: [7_000, 30_000])
+    # eval_steps: List[int] = field(default_factory=lambda: [7_000, 30_000])
+    eval_steps: List[int] = field(default_factory=lambda: [30_001])
     # Steps to save the model
     save_steps: List[int] = field(default_factory=lambda: [7_000, 30_000])
     # Whether to save ply file (storage size can be large)
@@ -144,9 +151,9 @@ class Config:
     pose_noise: float = 0.0
 
     # Enable appearance optimization. (experimental)
-    app_opt: bool = False
+    app_opt: bool = True  # TODO: Change here
     # Appearance embedding dimension
-    app_embed_dim: int = 16
+    app_embed_dim: int = 16 + 7
     # Learning rate for appearance optimization
     app_opt_lr: float = 1e-3
     # Regularization for appearance optimization as weight decay
@@ -191,21 +198,21 @@ class Config:
 
 
 def create_splats_with_optimizers(
-    parser: Parser,
-    init_type: str = "sfm",
-    init_num_pts: int = 100_000,
-    init_extent: float = 3.0,
-    init_opacity: float = 0.1,
-    init_scale: float = 1.0,
-    scene_scale: float = 1.0,
-    sh_degree: int = 3,
-    sparse_grad: bool = False,
-    visible_adam: bool = False,
-    batch_size: int = 1,
-    feature_dim: Optional[int] = None,
-    device: str = "cuda",
-    world_rank: int = 0,
-    world_size: int = 1,
+        parser: Parser,
+        init_type: str = "sfm",
+        init_num_pts: int = 100_000,
+        init_extent: float = 3.0,
+        init_opacity: float = 0.1,
+        init_scale: float = 1.0,
+        scene_scale: float = 1.0,
+        sh_degree: int = 3,
+        sparse_grad: bool = False,
+        visible_adam: bool = False,
+        batch_size: int = 1,
+        feature_dim: Optional[int] = None,
+        device: str = "cuda",
+        world_rank: int = 0,
+        world_size: int = 1,
 ) -> Tuple[torch.nn.ParameterDict, Dict[str, torch.optim.Optimizer]]:
     if init_type == "sfm":
         points = torch.from_numpy(parser.points).float()
@@ -215,6 +222,11 @@ def create_splats_with_optimizers(
         rgbs = torch.rand((init_num_pts, 3))
     else:
         raise ValueError("Please specify a correct init_type: sfm or random")
+
+    ipdb.set_trace()
+    # latent_feature_tensor = torch.randn(rgbs.shape[0], 4) # Adding another 4 dimension to rgb values
+    # rgbs = torch.cat([rgbs, latent_feature_tensor], dim=1)  # [N, 7]
+    # ipdb.set_trace()
 
     # Initialize the GS size to be the average dist of the 3 nearest neighbors
     dist2_avg = (knn(points, 4)[:, 1:] ** 2).mean(dim=-1)  # [N,]
@@ -226,6 +238,7 @@ def create_splats_with_optimizers(
     rgbs = rgbs[world_rank::world_size]
     scales = scales[world_rank::world_size]
 
+    ipdb.set_trace()
     N = points.shape[0]
     quats = torch.rand((N, 4))  # [N, 4]
     opacities = torch.logit(torch.full((N,), init_opacity))  # [N,]
@@ -241,6 +254,7 @@ def create_splats_with_optimizers(
     if feature_dim is None:
         # color is SH coefficients.
         colors = torch.zeros((N, (sh_degree + 1) ** 2, 3))  # [N, K, 3]
+        # colors = torch.zeros((N, (sh_degree + 1) ** 2, 3+4))  # [N, K, 3]
         colors[:, 0, :] = rgb_to_sh(rgbs)
         params.append(("sh0", torch.nn.Parameter(colors[:, :1, :]), 2.5e-3))
         params.append(("shN", torch.nn.Parameter(colors[:, 1:, :]), 2.5e-3 / 20))
@@ -251,6 +265,7 @@ def create_splats_with_optimizers(
         colors = torch.logit(rgbs)  # [N, 3]
         params.append(("colors", torch.nn.Parameter(colors), 2.5e-3))
 
+    ipdb.set_trace()
     splats = torch.nn.ParameterDict({n: v for n, v, _ in params}).to(device)
     # Scale learning rate based on batch size, reference:
     # https://www.cs.princeton.edu/~smalladi/blog/2024/01/22/SDEs-ScalingRules/
@@ -280,7 +295,7 @@ class Runner:
     """Engine for training and testing."""
 
     def __init__(
-        self, local_rank: int, world_rank, world_size: int, cfg: Config
+            self, local_rank: int, world_rank, world_size: int, cfg: Config
     ) -> None:
         set_random_seed(42 + local_rank)
 
@@ -450,15 +465,15 @@ class Runner:
             )
 
     def rasterize_splats(
-        self,
-        camtoworlds: Tensor,
-        Ks: Tensor,
-        width: int,
-        height: int,
-        masks: Optional[Tensor] = None,
-        rasterize_mode: Optional[Literal["classic", "antialiased"]] = None,
-        camera_model: Optional[Literal["pinhole", "ortho", "fisheye"]] = None,
-        **kwargs,
+            self,
+            camtoworlds: Tensor,
+            Ks: Tensor,
+            width: int,
+            height: int,
+            masks: Optional[Tensor] = None,
+            rasterize_mode: Optional[Literal["classic", "antialiased"]] = None,
+            camera_model: Optional[Literal["pinhole", "ortho", "fisheye"]] = None,
+            **kwargs,
     ) -> Tuple[Tensor, Tensor, Dict]:
         means = self.splats["means"]  # [N, 3]
         # quats = F.normalize(self.splats["quats"], dim=-1)  # [N, 4]
@@ -504,6 +519,127 @@ class Runner:
             rasterize_mode=rasterize_mode,
             distributed=self.world_size > 1,
             camera_model=self.cfg.camera_model,
+            **kwargs,
+        )
+        if masks is not None:
+            render_colors[~masks] = 0
+        return render_colors, render_alphas, info
+
+    def rasterize_splats_new(
+            self,
+            camtoworlds: Tensor,
+            Ks: Tensor,
+            width: int,
+            height: int,
+            masks: Optional[Tensor] = None,
+            rasterize_mode: Optional[Literal["classic", "antialiased"]] = None,
+            camera_model: Optional[Literal["pinhole", "ortho", "fisheye"]] = None,
+            **kwargs,
+    ) -> Tuple[Tensor, Tensor, Dict]:
+        means = self.splats["means"]  # [N, 3]
+        # quats = F.normalize(self.splats["quats"], dim=-1)  # [N, 4]
+        # rasterization does normalization internally
+        quats = self.splats["quats"]  # [N, 4]
+        scales = torch.exp(self.splats["scales"])  # [N, 3]
+        opacities = torch.sigmoid(self.splats["opacities"])  # [N,]
+
+        ipdb.set_trace()
+
+        image_ids = kwargs.pop("image_ids", None)
+        if self.cfg.app_opt:
+            colors = self.app_module(
+                features=self.splats["features"],
+                embed_ids=image_ids,
+                dirs=means[None, :, :] - camtoworlds[:, None, :3, 3],
+                sh_degree=kwargs.pop("sh_degree", self.cfg.sh_degree),
+            )
+            colors = colors + self.splats["colors"]
+            colors = torch.sigmoid(colors)
+        else:
+            colors = torch.cat([self.splats["sh0"], self.splats["shN"]], 1)  # [N, K, 3]
+
+        ipdb.set_trace()
+
+        # ####################################################################################
+
+        # image_ids = kwargs.pop("image_ids", None)
+        # # if self.cfg.app_opt:
+        # #     colors = self.app_module(
+        # #         features=self.splats["features"],
+        # #         embed_ids=image_ids,
+        # #         dirs=means[None, :, :] - camtoworlds[:, None, :3, 3],
+        # #         sh_degree=kwargs.pop("sh_degree", self.cfg.sh_degree),
+        # #     )
+        # #     colors = colors + self.splats["colors"]
+        # #     colors = torch.sigmoid(colors)
+        # # else:
+        # #     colors = torch.cat([self.splats["sh0"], self.splats["shN"]], 1)  # [N, K, 3]
+
+        # sh_degree = kwargs.pop("sh_degree", self.cfg.sh_degree)
+
+        # # if latent_feature is not None:
+
+        # # Compute directions to camera center
+        # cam_center = camtoworlds[:, :3, 3]  # [B, 3]
+        # dirs = means[None, :, :] - cam_center[:, None, :]  # [B, N, 3]
+        # dirs = dirs[0]  # [N, 3], assuming single view
+
+        # # SH coefficients
+        # sh_coeffs = torch.cat([self.splats["sh0"], self.splats["shN"]], dim=1)  # [N, K, 3]
+
+        # # Manual SH to RGB
+        # ipdb.set_trace()
+        # colors = spherical_harmonics(
+        #     sh_degree,
+        #     dirs,
+        #     sh_coeffs
+        # )  # [N, 3]
+        # ipdb.set_trace()
+        # colors = torch.clamp_min(colors + 0.5, 0.0)  # mimic default behavior
+        # ipdb.set_trace()
+
+        # # Add extra latent features if present
+        # # latent_feature = self.splats.get("latent_feature", None)  # [N, C_latent]
+
+        # # if latent_feature is not None:
+        # #     colors = torch.cat([colors, latent_feature], dim=-1)  # [N, 3 + C_latent]
+
+        # ####################################################################################
+
+        kwargs.pop("sh_degree", None)
+        used_sh_degree = None  # disable SH in rasterizer
+
+        # else:
+        #     # fallback to original SH feature field (not used in this path)
+        #     colors = torch.cat([self.splats["sh0"], self.splats["shN"]], dim=1)  # [N, K, 3]
+        #     used_sh_degree = sh_degree  # SH handled in rasterizer
+
+        if rasterize_mode is None:
+            rasterize_mode = "antialiased" if self.cfg.antialiased else "classic"
+        if camera_model is None:
+            camera_model = self.cfg.camera_model
+        ipdb.set_trace()
+        render_colors, render_alphas, info = rasterization(
+            means=means,
+            quats=quats,
+            scales=scales,
+            opacities=opacities,
+            colors=colors,
+            viewmats=torch.linalg.inv(camtoworlds),  # [C, 4, 4]
+            Ks=Ks,  # [C, 3, 3]
+            width=width,
+            height=height,
+            packed=self.cfg.packed,
+            absgrad=(
+                self.cfg.strategy.absgrad
+                if isinstance(self.cfg.strategy, DefaultStrategy)
+                else False
+            ),
+            sparse_grad=self.cfg.sparse_grad,
+            rasterize_mode=rasterize_mode,
+            distributed=self.world_size > 1,
+            camera_model=self.cfg.camera_model,
+            sh_degree=used_sh_degree,
             **kwargs,
         )
         if masks is not None:
@@ -564,6 +700,7 @@ class Runner:
         )
         trainloader_iter = iter(trainloader)
 
+        ipdb.set_trace()
         # Training loop.
         global_tic = time.time()
         pbar = tqdm.tqdm(range(init_step, max_steps))
@@ -580,19 +717,24 @@ class Runner:
                 trainloader_iter = iter(trainloader)
                 data = next(trainloader_iter)
 
+            ipdb.set_trace()
             camtoworlds = camtoworlds_gt = data["camtoworld"].to(device)  # [1, 4, 4]
             Ks = data["K"].to(device)  # [1, 3, 3]
             pixels = data["image"].to(device) / 255.0  # [1, H, W, 3]
             num_train_rays_per_step = (
-                pixels.shape[0] * pixels.shape[1] * pixels.shape[2]
+                    pixels.shape[0] * pixels.shape[1] * pixels.shape[2]
             )
             image_ids = data["image_id"].to(device)
             masks = data["mask"].to(device) if "mask" in data else None  # [1, H, W]
+            latent_feature = data["latent_feature"]
             if cfg.depth_loss:
                 points = data["points"].to(device)  # [1, M, 2]
                 depths_gt = data["depths"].to(device)  # [1, M]
 
             height, width = pixels.shape[1:3]
+
+            # # Add latent feature to pixels
+            # pixels = torch.cat([data["image"], data["latent_feature"]], dim=-1)
 
             if cfg.pose_noise:
                 camtoworlds = self.pose_perturb(camtoworlds, image_ids)
@@ -601,10 +743,12 @@ class Runner:
                 camtoworlds = self.pose_adjust(camtoworlds, image_ids)
 
             # sh schedule
-            sh_degree_to_use = min(step // cfg.sh_degree_interval, cfg.sh_degree)
+            # sh_degree_to_use = min(step // cfg.sh_degree_interval, cfg.sh_degree)
+            sh_degree_to_use = cfg.sh_degree
+            ipdb.set_trace()
 
             # forward
-            renders, alphas, info = self.rasterize_splats(
+            renders, alphas, info = self.rasterize_splats_new(
                 camtoworlds=camtoworlds,
                 Ks=Ks,
                 width=width,
@@ -643,6 +787,7 @@ class Runner:
             )
 
             # loss
+            ipdb.set_trace()
             l1loss = F.l1_loss(colors, pixels)
             ssimloss = 1.0 - fused_ssim(
                 colors.permute(0, 3, 1, 2), pixels.permute(0, 3, 1, 2), padding="valid"
@@ -674,14 +819,14 @@ class Runner:
             # regularizations
             if cfg.opacity_reg > 0.0:
                 loss = (
-                    loss
-                    + cfg.opacity_reg
-                    * torch.abs(torch.sigmoid(self.splats["opacities"])).mean()
+                        loss
+                        + cfg.opacity_reg
+                        * torch.abs(torch.sigmoid(self.splats["opacities"])).mean()
                 )
             if cfg.scale_reg > 0.0:
                 loss = (
-                    loss
-                    + cfg.scale_reg * torch.abs(torch.exp(self.splats["scales"])).mean()
+                        loss
+                        + cfg.scale_reg * torch.abs(torch.exp(self.splats["scales"])).mean()
                 )
 
             loss.backward()
@@ -705,7 +850,7 @@ class Runner:
             #     )
 
             if world_rank == 0 and cfg.tb_every > 0 and step % cfg.tb_every == 0:
-                mem = torch.cuda.max_memory_allocated() / 1024**3
+                mem = torch.cuda.max_memory_allocated() / 1024 ** 3
                 self.writer.add_scalar("train/loss", loss.item(), step)
                 self.writer.add_scalar("train/l1loss", l1loss.item(), step)
                 self.writer.add_scalar("train/ssimloss", ssimloss.item(), step)
@@ -723,7 +868,7 @@ class Runner:
 
             # save checkpoint before updating the model
             if step in [i - 1 for i in cfg.save_steps] or step == max_steps - 1:
-                mem = torch.cuda.max_memory_allocated() / 1024**3
+                mem = torch.cuda.max_memory_allocated() / 1024 ** 3
                 stats = {
                     "mem": mem,
                     "ellipse_time": time.time() - global_tic,
@@ -731,8 +876,8 @@ class Runner:
                 }
                 print("Step: ", step, stats)
                 with open(
-                    f"{self.stats_dir}/train_step{step:04d}_rank{self.world_rank}.json",
-                    "w",
+                        f"{self.stats_dir}/train_step{step:04d}_rank{self.world_rank}.json",
+                        "w",
                 ) as f:
                     json.dump(stats, f)
                 data = {"step": step, "splats": self.splats.state_dict()}
@@ -750,7 +895,7 @@ class Runner:
                     data, f"{self.ckpt_dir}/ckpt_{step}_rank{self.world_rank}.pt"
                 )
             if (
-                step in [i - 1 for i in cfg.ply_steps] or step == max_steps - 1
+                    step in [i - 1 for i in cfg.ply_steps] or step == max_steps - 1
             ) and cfg.save_ply:
 
                 if self.cfg.app_opt:
@@ -863,7 +1008,7 @@ class Runner:
                 self.viewer.lock.release()
                 num_train_steps_per_sec = 1.0 / (time.time() - tic)
                 num_train_rays_per_sec = (
-                    num_train_rays_per_step * num_train_steps_per_sec
+                        num_train_rays_per_step * num_train_steps_per_sec
                 )
                 # Update the viewer state.
                 self.viewer.render_tab_state.num_train_rays_per_sec = (
@@ -1002,7 +1147,7 @@ class Runner:
         os.makedirs(video_dir, exist_ok=True)
         writer = imageio.get_writer(f"{video_dir}/traj_{step}.mp4", fps=30)
         for i in tqdm.trange(len(camtoworlds_all), desc="Rendering trajectory"):
-            camtoworlds = camtoworlds_all[i : i + 1]
+            camtoworlds = camtoworlds_all[i: i + 1]
             Ks = K[None]
 
             renders, _, _ = self.rasterize_splats(
@@ -1046,7 +1191,7 @@ class Runner:
 
     @torch.no_grad()
     def _viewer_render_fn(
-        self, camera_state: CameraState, render_tab_state: RenderTabState
+            self, camera_state: CameraState, render_tab_state: RenderTabState
     ):
         assert isinstance(render_tab_state, GsplatRenderTabState)
         if render_tab_state.preview_render:
@@ -1078,7 +1223,7 @@ class Runner:
             radius_clip=render_tab_state.radius_clip,
             eps2d=render_tab_state.eps2d,
             backgrounds=torch.tensor([render_tab_state.backgrounds], device=self.device)
-            / 255.0,
+                        / 255.0,
             render_mode=RENDER_MODE_MAP[render_tab_state.render_mode],
             rasterize_mode=render_tab_state.rasterize_mode,
             camera_model=render_tab_state.camera_model,

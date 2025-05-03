@@ -5,6 +5,7 @@ import torch
 from torch import Tensor
 from typing_extensions import Literal
 
+import ipdb
 
 def _make_lazy_cuda_func(name: str) -> Callable:
     def call_cuda(*args, **kwargs):
@@ -91,6 +92,7 @@ def spherical_harmonics(
         degrees_to_use: The degree to be used.
         dirs: Directions. [..., 3]
         coeffs: Coefficients. [..., K, 3]
+        # coeffs: Coefficients. [..., K, 7]
         masks: Optional boolen masks to skip some computation. [...,] Default: None.
 
     Returns:
@@ -100,6 +102,7 @@ def spherical_harmonics(
     assert dirs.shape[:-1] == coeffs.shape[:-2], (dirs.shape, coeffs.shape)
     assert dirs.shape[-1] == 3, dirs.shape
     assert coeffs.shape[-1] == 3, coeffs.shape
+    # assert coeffs.shape[-1] == 7, coeffs.shape
     if masks is not None:
         assert masks.shape == dirs.shape[:-1], masks.shape
         masks = masks.contiguous()
@@ -487,6 +490,8 @@ def rasterize_to_pixels(
 
     C = isect_offsets.size(0)
     device = means2d.device
+
+    ipdb.set_trace()
     if packed:
         nnz = means2d.size(0)
         assert means2d.shape == (nnz, 2), means2d.shape

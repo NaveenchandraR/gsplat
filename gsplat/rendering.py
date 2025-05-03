@@ -24,6 +24,8 @@ from .distributed import (
 )
 from .utils import depth_to_normal, get_projection_matrix
 
+import ipdb
+
 
 def rasterization(
     means: Tensor,  # [N, 3]
@@ -250,6 +252,7 @@ def rasterization(
         )
         return torch.stack([torch.cat(l, dim=0) for l in zip(*view_list)], dim=0)
 
+    ipdb.set_trace()
     if sh_degree is None:
         # treat colors as post-activation values, should be in shape [N, D] or [C, N, D]
         assert (colors.dim() == 2 and colors.shape[0] == N) or (
@@ -353,6 +356,7 @@ def rasterization(
     )
 
     # Turn colors into [C, N, D] or [nnz, D] to pass into rasterize_to_pixels()
+    ipdb.set_trace()
     if sh_degree is None:
         # Colors are post-activation values, with shape [N, D] or [C, N, D]
         if packed:
