@@ -412,7 +412,7 @@ class Dataset:
             "image_id": item,  # the index of the image in the dataset
             "latent_feature": latent_feature,
         }
-        # import ipdb; ipdb.set_trace()
+        # import ipdb; # ipdb.set_trace()
         if mask is not None:
             data["mask"] = torch.from_numpy(mask).bool()
 

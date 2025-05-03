@@ -252,11 +252,11 @@ def rasterization(
         )
         return torch.stack([torch.cat(l, dim=0) for l in zip(*view_list)], dim=0)
 
-    ipdb.set_trace()
+    # ipdb.set_trace()
     if sh_degree is None:
         # treat colors as post-activation values, should be in shape [N, D] or [C, N, D]
         assert (colors.dim() == 2 and colors.shape[0] == N) or (
-            colors.dim() == 3 and colors.shape[:2] == (C, N)
+            colors.dim() == 3 and colors.shape[0] == N and colors.shape[-1] == 7
         ), colors.shape
         if distributed:
             assert (
@@ -276,6 +276,7 @@ def rasterization(
                 colors.dim() == 3
             ), "Distributed mode only supports per-Gaussian colors."
 
+    # ipdb.set_trace()
     if absgrad:
         assert not distributed, "AbsGrad is not supported in distributed mode."
 
@@ -356,7 +357,7 @@ def rasterization(
     )
 
     # Turn colors into [C, N, D] or [nnz, D] to pass into rasterize_to_pixels()
-    ipdb.set_trace()
+    # ipdb.set_trace()
     if sh_degree is None:
         # Colors are post-activation values, with shape [N, D] or [C, N, D]
         if packed:
@@ -399,6 +400,7 @@ def rasterization(
         # make it apple-to-apple with Inria's CUDA Backend.
         colors = torch.clamp_min(colors + 0.5, 0.0)
 
+    # ipdb.set_trace()
     # If in distributed mode, we need to scatter the GSs to the destination ranks, based
     # on which cameras they are visible to, which we already figured out in the projection
     # stage.

@@ -151,9 +151,9 @@ class Config:
     pose_noise: float = 0.0
 
     # Enable appearance optimization. (experimental)
-    app_opt: bool = True  # TODO: Change here
+    app_opt: bool = False  # TODO: Change here to false
     # Appearance embedding dimension
-    app_embed_dim: int = 16 + 7
+    app_embed_dim: int = 16
     # Learning rate for appearance optimization
     app_opt_lr: float = 1e-3
     # Regularization for appearance optimization as weight decay
@@ -165,7 +165,7 @@ class Config:
     bilateral_grid_shape: Tuple[int, int, int] = (16, 16, 8)
 
     # Enable depth loss. (experimental)
-    depth_loss: bool = False
+    depth_loss: bool = False # TODO: Change here to False
     # Weight for depth loss
     depth_lambda: float = 1e-2
 
@@ -223,9 +223,9 @@ def create_splats_with_optimizers(
     else:
         raise ValueError("Please specify a correct init_type: sfm or random")
 
-    ipdb.set_trace()
-    # latent_feature_tensor = torch.randn(rgbs.shape[0], 4) # Adding another 4 dimension to rgb values
-    # rgbs = torch.cat([rgbs, latent_feature_tensor], dim=1)  # [N, 7]
+    # ipdb.set_trace()
+    latent_feature_tensor = torch.randn(rgbs.shape[0], 4) # Adding another 4 dimension to rgb values
+    rgbs = torch.cat([rgbs, latent_feature_tensor], dim=1)  # [N, 7]
     # ipdb.set_trace()
 
     # Initialize the GS size to be the average dist of the 3 nearest neighbors
@@ -238,7 +238,7 @@ def create_splats_with_optimizers(
     rgbs = rgbs[world_rank::world_size]
     scales = scales[world_rank::world_size]
 
-    ipdb.set_trace()
+    # ipdb.set_trace()
     N = points.shape[0]
     quats = torch.rand((N, 4))  # [N, 4]
     opacities = torch.logit(torch.full((N,), init_opacity))  # [N,]
@@ -251,10 +251,11 @@ def create_splats_with_optimizers(
         ("opacities", torch.nn.Parameter(opacities), 5e-2),
     ]
 
+    # ipdb.set_trace()
     if feature_dim is None:
         # color is SH coefficients.
-        colors = torch.zeros((N, (sh_degree + 1) ** 2, 3))  # [N, K, 3]
-        # colors = torch.zeros((N, (sh_degree + 1) ** 2, 3+4))  # [N, K, 3]
+        # colors = torch.zeros((N, (sh_degree + 1) ** 2, 3))  # [N, K, 3]
+        colors = torch.zeros((N, (sh_degree + 1) ** 2, 3+4))  # [N, K, 3]
         colors[:, 0, :] = rgb_to_sh(rgbs)
         params.append(("sh0", torch.nn.Parameter(colors[:, :1, :]), 2.5e-3))
         params.append(("shN", torch.nn.Parameter(colors[:, 1:, :]), 2.5e-3 / 20))
@@ -265,7 +266,7 @@ def create_splats_with_optimizers(
         colors = torch.logit(rgbs)  # [N, 3]
         params.append(("colors", torch.nn.Parameter(colors), 2.5e-3))
 
-    ipdb.set_trace()
+    # ipdb.set_trace()
     splats = torch.nn.ParameterDict({n: v for n, v, _ in params}).to(device)
     # Scale learning rate based on batch size, reference:
     # https://www.cs.princeton.edu/~smalladi/blog/2024/01/22/SDEs-ScalingRules/
@@ -543,7 +544,9 @@ class Runner:
         scales = torch.exp(self.splats["scales"])  # [N, 3]
         opacities = torch.sigmoid(self.splats["opacities"])  # [N,]
 
-        ipdb.set_trace()
+        # ipdb.set_trace()
+
+        ####################################################################################
 
         image_ids = kwargs.pop("image_ids", None)
         if self.cfg.app_opt:
@@ -558,7 +561,9 @@ class Runner:
         else:
             colors = torch.cat([self.splats["sh0"], self.splats["shN"]], 1)  # [N, K, 3]
 
-        ipdb.set_trace()
+        # ipdb.set_trace()
+
+        # ####################################################################################
 
         # ####################################################################################
 
@@ -588,15 +593,15 @@ class Runner:
         # sh_coeffs = torch.cat([self.splats["sh0"], self.splats["shN"]], dim=1)  # [N, K, 3]
 
         # # Manual SH to RGB
-        # ipdb.set_trace()
+        # # ipdb.set_trace()
         # colors = spherical_harmonics(
         #     sh_degree,
         #     dirs,
         #     sh_coeffs
         # )  # [N, 3]
-        # ipdb.set_trace()
+        # # ipdb.set_trace()
         # colors = torch.clamp_min(colors + 0.5, 0.0)  # mimic default behavior
-        # ipdb.set_trace()
+        # # ipdb.set_trace()
 
         # # Add extra latent features if present
         # # latent_feature = self.splats.get("latent_feature", None)  # [N, C_latent]
@@ -618,7 +623,7 @@ class Runner:
             rasterize_mode = "antialiased" if self.cfg.antialiased else "classic"
         if camera_model is None:
             camera_model = self.cfg.camera_model
-        ipdb.set_trace()
+        # ipdb.set_trace()
         render_colors, render_alphas, info = rasterization(
             means=means,
             quats=quats,
@@ -639,7 +644,7 @@ class Runner:
             rasterize_mode=rasterize_mode,
             distributed=self.world_size > 1,
             camera_model=self.cfg.camera_model,
-            sh_degree=used_sh_degree,
+            # sh_degree=used_sh_degree,
             **kwargs,
         )
         if masks is not None:
@@ -700,7 +705,7 @@ class Runner:
         )
         trainloader_iter = iter(trainloader)
 
-        ipdb.set_trace()
+        # ipdb.set_trace()
         # Training loop.
         global_tic = time.time()
         pbar = tqdm.tqdm(range(init_step, max_steps))
@@ -717,7 +722,7 @@ class Runner:
                 trainloader_iter = iter(trainloader)
                 data = next(trainloader_iter)
 
-            ipdb.set_trace()
+            # ipdb.set_trace()
             camtoworlds = camtoworlds_gt = data["camtoworld"].to(device)  # [1, 4, 4]
             Ks = data["K"].to(device)  # [1, 3, 3]
             pixels = data["image"].to(device) / 255.0  # [1, H, W, 3]
@@ -726,15 +731,15 @@ class Runner:
             )
             image_ids = data["image_id"].to(device)
             masks = data["mask"].to(device) if "mask" in data else None  # [1, H, W]
-            latent_feature = data["latent_feature"]
+            # latent_feature = data["latent_feature"]
             if cfg.depth_loss:
                 points = data["points"].to(device)  # [1, M, 2]
                 depths_gt = data["depths"].to(device)  # [1, M]
 
             height, width = pixels.shape[1:3]
 
-            # # Add latent feature to pixels
-            # pixels = torch.cat([data["image"], data["latent_feature"]], dim=-1)
+            # Add latent feature to pixels
+            pixels = torch.cat([data["image"], data["latent_feature"]], dim=-1).to(device)
 
             if cfg.pose_noise:
                 camtoworlds = self.pose_perturb(camtoworlds, image_ids)
@@ -745,7 +750,7 @@ class Runner:
             # sh schedule
             # sh_degree_to_use = min(step // cfg.sh_degree_interval, cfg.sh_degree)
             sh_degree_to_use = cfg.sh_degree
-            ipdb.set_trace()
+            # ipdb.set_trace()
 
             # forward
             renders, alphas, info = self.rasterize_splats_new(
@@ -787,7 +792,7 @@ class Runner:
             )
 
             # loss
-            ipdb.set_trace()
+            # ipdb.set_trace()
             l1loss = F.l1_loss(colors, pixels)
             ssimloss = 1.0 - fused_ssim(
                 colors.permute(0, 3, 1, 2), pixels.permute(0, 3, 1, 2), padding="valid"

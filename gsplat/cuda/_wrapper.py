@@ -101,8 +101,8 @@ def spherical_harmonics(
     assert (degrees_to_use + 1) ** 2 <= coeffs.shape[-2], coeffs.shape
     assert dirs.shape[:-1] == coeffs.shape[:-2], (dirs.shape, coeffs.shape)
     assert dirs.shape[-1] == 3, dirs.shape
-    assert coeffs.shape[-1] == 3, coeffs.shape
-    # assert coeffs.shape[-1] == 7, coeffs.shape
+    # assert coeffs.shape[-1] == 3, coeffs.shape
+    assert coeffs.shape[-1] == 7, coeffs.shape
     if masks is not None:
         assert masks.shape == dirs.shape[:-1], masks.shape
         masks = masks.contiguous()
@@ -491,7 +491,7 @@ def rasterize_to_pixels(
     C = isect_offsets.size(0)
     device = means2d.device
 
-    ipdb.set_trace()
+    # ipdb.set_trace()
     if packed:
         nnz = means2d.size(0)
         assert means2d.shape == (nnz, 2), means2d.shape
@@ -502,7 +502,7 @@ def rasterize_to_pixels(
         N = means2d.size(1)
         assert means2d.shape == (C, N, 2), means2d.shape
         assert conics.shape == (C, N, 3), conics.shape
-        assert colors.shape[:2] == (C, N), colors.shape
+        assert colors.shape[0] == N, colors.shape
         assert opacities.shape == (C, N), opacities.shape
     if backgrounds is not None:
         assert backgrounds.shape == (C, colors.shape[-1]), backgrounds.shape
@@ -566,6 +566,7 @@ def rasterize_to_pixels(
         tile_width * tile_size >= image_width
     ), f"Assert Failed: {tile_width} * {tile_size} >= {image_width}"
 
+    # ipdb.set_trace()
     render_colors, render_alphas = _RasterizeToPixels.apply(
         means2d.contiguous(),
         conics.contiguous(),
@@ -580,6 +581,7 @@ def rasterize_to_pixels(
         flatten_ids.contiguous(),
         absgrad,
     )
+    # ipdb.set_trace()
 
     if padded_channels > 0:
         render_colors = render_colors[..., :-padded_channels]
