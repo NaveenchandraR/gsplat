@@ -259,9 +259,9 @@ class Parser:
         self.point_indices = point_indices  # Dict[str, np.ndarray], image_name -> [M,]
         self.transform = transform  # np.ndarray, (4, 4)
         self.pt_paths = [
-                            path.replace("images", "pt_files").replace(".png", ".pt")
-                            for path in self.image_paths
-                        ]
+            os.path.splitext(path.replace("images", "pt_files"))[0] + ".pt"
+            for path in self.image_paths
+        ]
 
         # load one image to check the size. In the case of tanksandtemples dataset, the
         # intrinsics stored in COLMAP corresponds to 2x upsampled images.
@@ -384,7 +384,8 @@ class Dataset:
         camtoworlds = self.parser.camtoworlds[index]
         mask = self.parser.mask_dict[camera_id]
         latent_feature = torch.load(self.parser.pt_paths[index], map_location='cpu')
-        latent_feature = latent_feature.squeeze().permute(2, 1, 0)
+        # latent_feature = latent_feature.squeeze().permute(2, 1, 0)
+        latent_feature = latent_feature.squeeze().permute(1, 2, 0)
 
         if len(params) > 0:
             # Images are distorted. Undistort them.
