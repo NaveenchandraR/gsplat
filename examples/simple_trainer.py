@@ -51,7 +51,7 @@ from gsplat.cuda._wrapper import spherical_harmonics
 @dataclass
 class Config:
     # Disable viewer
-    disable_viewer: bool = False
+    disable_viewer: bool = True
     # Path to the .pt files. If provide, it will skip training and run evaluation only.
     ckpt: Optional[List[str]] = None
     # Name of compression strategy to use
@@ -85,10 +85,11 @@ class Config:
     steps_scaler: float = 1.0
 
     # Number of training steps
-    max_steps: int = 30_000
+    max_steps: int = 7_000
+    # max_steps: int = 1
     # Steps to evaluate the model
     # eval_steps: List[int] = field(default_factory=lambda: [7_000, 30_000])
-    eval_steps: List[int] = field(default_factory=lambda: [30_000])
+    eval_steps: List[int] = field(default_factory=lambda: [1, 7_000, 30_000])
     # Steps to save the model
     save_steps: List[int] = field(default_factory=lambda: [7_000, 30_000])
     # Whether to save ply file (storage size can be large)
@@ -500,6 +501,7 @@ class Runner:
             rasterize_mode = "antialiased" if self.cfg.antialiased else "classic"
         if camera_model is None:
             camera_model = self.cfg.camera_model
+        # ipdb.set_trace()
         render_colors, render_alphas, info = rasterization(
             means=means,
             quats=quats,
@@ -739,7 +741,7 @@ class Runner:
             height, width = pixels.shape[1:3]
 
             # Add latent feature to pixels
-            pixels = torch.cat([data["image"], data["latent_feature"]], dim=-1).to(device)
+            latent_feature = data["latent_feature"].to(device)
 
             if cfg.pose_noise:
                 camtoworlds = self.pose_perturb(camtoworlds, image_ids)
@@ -767,6 +769,8 @@ class Runner:
             )
             if renders.shape[-1] == 4:
                 colors, depths = renders[..., 0:3], renders[..., 3:4]
+            elif renders.shape[-1] == 7:
+                colors, latents, depths = renders[..., 0:3], renders[..., 3:7], None
             else:
                 colors, depths = renders, None
 
@@ -797,7 +801,8 @@ class Runner:
             ssimloss = 1.0 - fused_ssim(
                 colors.permute(0, 3, 1, 2), pixels.permute(0, 3, 1, 2), padding="valid"
             )
-            loss = l1loss * (1.0 - cfg.ssim_lambda) + ssimloss * cfg.ssim_lambda
+            latent_loss = F.mse_loss(latents, latent_feature)
+            loss = l1loss * (1.0 - cfg.ssim_lambda) + ssimloss * cfg.ssim_lambda + latent_loss
             if cfg.depth_loss:
                 # query depths from depth map
                 points = torch.stack(
@@ -1003,7 +1008,7 @@ class Runner:
             # eval the full set
             if step in [i - 1 for i in cfg.eval_steps]:
                 self.eval(step)
-                self.render_traj(step)
+                # self.render_traj(step)
 
             # run compression
             if cfg.compression is not None and step in [i - 1 for i in cfg.eval_steps]:
@@ -1040,12 +1045,14 @@ class Runner:
             camtoworlds = data["camtoworld"].to(device)
             Ks = data["K"].to(device)
             pixels = data["image"].to(device) / 255.0
+            latent_feature = data["latent_feature"].to(device)
             masks = data["mask"].to(device) if "mask" in data else None
             height, width = pixels.shape[1:3]
 
             torch.cuda.synchronize()
             tic = time.time()
-            colors, _, _ = self.rasterize_splats(
+            # ipdb.set_trace()
+            colors, _, _ = self.rasterize_splats_new(
                 camtoworlds=camtoworlds,
                 Ks=Ks,
                 width=width,
@@ -1058,8 +1065,16 @@ class Runner:
             torch.cuda.synchronize()
             ellipse_time += time.time() - tic
 
-            colors = torch.clamp(colors, 0.0, 1.0)
-            canvas_list = [pixels, colors]
+            # ipdb.set_trace()
+            colors_image = colors[:,:,:,:3]
+            colors_latent = colors[:,:,:,3:]
+            pixels_image = pixels
+            pixels_latent = latent_feature
+
+            colors_image = torch.clamp(colors_image, 0.0, 1.0)
+            # pixels_image = torch.clamp(pixels_image, 0.0, 1.0)
+            canvas_list = [pixels_image, colors_image]
+            # ipdb.set_trace()
 
             if world_rank == 0:
                 # write images
@@ -1069,14 +1084,24 @@ class Runner:
                     f"{self.render_dir}/{stage}_step{step}_{i:04d}.png",
                     canvas,
                 )
+                torch.save(
+                    colors_latent, 
+                    f"{self.render_dir}/{stage}_step{step}_colors_latent_{i:04d}.pt"
+                )
+                torch.save(
+                    pixels_latent, 
+                    f"{self.render_dir}/{stage}_step{step}_pixels_latent_{i:04d}.pt"
+                )
 
-                pixels_p = pixels.permute(0, 3, 1, 2)  # [1, 3, H, W]
-                colors_p = colors.permute(0, 3, 1, 2)  # [1, 3, H, W]
+                # ipdb.set_trace()
+                pixels_p = pixels_image.permute(0, 3, 1, 2)  # [1, 3, H, W]
+                colors_p = colors_image.permute(0, 3, 1, 2)  # [1, 3, H, W]
+                # ipdb.set_trace()
                 metrics["psnr"].append(self.psnr(colors_p, pixels_p))
                 metrics["ssim"].append(self.ssim(colors_p, pixels_p))
                 metrics["lpips"].append(self.lpips(colors_p, pixels_p))
                 if cfg.use_bilateral_grid:
-                    cc_colors = color_correct(colors, pixels)
+                    cc_colors = color_correct(colors_image, pixels_image)
                     cc_colors_p = cc_colors.permute(0, 3, 1, 2)  # [1, 3, H, W]
                     metrics["cc_psnr"].append(self.psnr(cc_colors_p, pixels_p))
 

@@ -102,7 +102,7 @@ def spherical_harmonics(
     assert dirs.shape[:-1] == coeffs.shape[:-2], (dirs.shape, coeffs.shape)
     assert dirs.shape[-1] == 3, dirs.shape
     # assert coeffs.shape[-1] == 3, coeffs.shape
-    assert coeffs.shape[-1] == 7, coeffs.shape
+    # assert coeffs.shape[-1] == 7, coeffs.shape
     if masks is not None:
         assert masks.shape == dirs.shape[:-1], masks.shape
         masks = masks.contiguous()
