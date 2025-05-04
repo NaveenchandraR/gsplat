@@ -85,7 +85,7 @@ class Config:
     steps_scaler: float = 1.0
 
     # Number of training steps
-    max_steps: int = 7_000
+    max_steps: int = 30_000
     # max_steps: int = 1
     # Steps to evaluate the model
     # eval_steps: List[int] = field(default_factory=lambda: [7_000, 30_000])
@@ -224,10 +224,10 @@ def create_splats_with_optimizers(
     else:
         raise ValueError("Please specify a correct init_type: sfm or random")
 
-    # ipdb.set_trace()
-    latent_feature_tensor = torch.randn(rgbs.shape[0], 4) # Adding another 4 dimension to rgb values
-    rgbs = torch.cat([rgbs, latent_feature_tensor], dim=1)  # [N, 7]
-    # ipdb.set_trace()
+    # # ipdb.set_trace()
+    # latent_feature_tensor = torch.randn(rgbs.shape[0], 4) # Adding another 4 dimension to rgb values
+    # rgbs = torch.cat([rgbs, latent_feature_tensor], dim=1)  # [N, 7]
+    # # ipdb.set_trace()
 
     # Initialize the GS size to be the average dist of the 3 nearest neighbors
     dist2_avg = (knn(points, 4)[:, 1:] ** 2).mean(dim=-1)  # [N,]
@@ -256,10 +256,12 @@ def create_splats_with_optimizers(
     if feature_dim is None:
         # color is SH coefficients.
         # colors = torch.zeros((N, (sh_degree + 1) ** 2, 3))  # [N, K, 3]
-        colors = torch.zeros((N, (sh_degree + 1) ** 2, 3+4))  # [N, K, 3]
+        colors = torch.zeros((N, (sh_degree + 1) ** 2, 3))  # [N, K, 3]
+        lats = torch.zeros((N, (sh_degree + 1) ** 2, 4))  # [N, K, 4]
         colors[:, 0, :] = rgb_to_sh(rgbs)
         params.append(("sh0", torch.nn.Parameter(colors[:, :1, :]), 2.5e-3))
         params.append(("shN", torch.nn.Parameter(colors[:, 1:, :]), 2.5e-3 / 20))
+        params.append(("lats", torch.nn.Parameter(lats), 2.5e-3))
     else:
         # features will be used for appearance and view-dependent shading
         features = torch.rand(N, feature_dim)  # [N, feature_dim]
@@ -563,7 +565,9 @@ class Runner:
         else:
             colors = torch.cat([self.splats["sh0"], self.splats["shN"]], 1)  # [N, K, 3]
 
+        latents = self.splats["lats"]
         # ipdb.set_trace()
+        colors = torch.cat([colors, latents], -1)
 
         # ####################################################################################
 
@@ -802,6 +806,7 @@ class Runner:
                 colors.permute(0, 3, 1, 2), pixels.permute(0, 3, 1, 2), padding="valid"
             )
             latent_loss = F.mse_loss(latents, latent_feature)
+            # ipdb.set_trace()
             loss = l1loss * (1.0 - cfg.ssim_lambda) + ssimloss * cfg.ssim_lambda + latent_loss
             if cfg.depth_loss:
                 # query depths from depth map
@@ -839,9 +844,10 @@ class Runner:
                         + cfg.scale_reg * torch.abs(torch.exp(self.splats["scales"])).mean()
                 )
 
+            # ipdb.set_trace()
             loss.backward()
 
-            desc = f"loss={loss.item():.3f}| " f"sh degree={sh_degree_to_use}| "
+            desc = f"loss={loss.item():.3f}| " f"sh degree={sh_degree_to_use}| " f"latent_loss={latent_loss.item():.3f}| "
             if cfg.depth_loss:
                 desc += f"depth loss={depthloss.item():.6f}| "
             if cfg.pose_opt and cfg.pose_noise:
