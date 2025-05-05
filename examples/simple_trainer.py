@@ -807,7 +807,9 @@ class Runner:
             )
             latent_loss = F.mse_loss(latents, latent_feature)
             # ipdb.set_trace()
-            loss = l1loss * (1.0 - cfg.ssim_lambda) + ssimloss * cfg.ssim_lambda + latent_loss
+            loss = l1loss * (1.0 - cfg.ssim_lambda) + ssimloss * cfg.ssim_lambda
+            if latent_loss is not None:
+                loss += 3*latent_loss
             if cfg.depth_loss:
                 # query depths from depth map
                 points = torch.stack(
@@ -1186,7 +1188,7 @@ class Runner:
             camtoworlds = camtoworlds_all[i: i + 1]
             Ks = K[None]
 
-            renders, _, _ = self.rasterize_splats(
+            renders, _, _ = self.rasterize_splats_new(
                 camtoworlds=camtoworlds,
                 Ks=Ks,
                 width=width,
@@ -1194,15 +1196,16 @@ class Runner:
                 sh_degree=cfg.sh_degree,
                 near_plane=cfg.near_plane,
                 far_plane=cfg.far_plane,
-                render_mode="RGB+ED",
+                render_mode="RGB",
             )  # [1, H, W, 4]
             colors = torch.clamp(renders[..., 0:3], 0.0, 1.0)  # [1, H, W, 3]
-            depths = renders[..., 3:4]  # [1, H, W, 1]
-            depths = (depths - depths.min()) / (depths.max() - depths.min())
-            canvas_list = [colors, depths.repeat(1, 1, 1, 3)]
+            # depths = renders[..., 3:4]  # [1, H, W, 1]
+            # depths = (depths - depths.min()) / (depths.max() - depths.min())
+            # canvas_list = [colors, depths.repeat(1, 1, 1, 3)]
 
-            # write images
-            canvas = torch.cat(canvas_list, dim=2).squeeze(0).cpu().numpy()
+            # # write images
+            # canvas = torch.cat(canvas_list, dim=2).squeeze(0).cpu().numpy()
+            canvas = colors.squeeze(0).cpu().numpy()
             canvas = (canvas * 255).astype(np.uint8)
             writer.append_data(canvas)
         writer.close()
@@ -1306,6 +1309,7 @@ def main(local_rank: int, world_rank, world_size: int, cfg: Config):
             print("Viewer is disabled in distributed training.")
 
     runner = Runner(local_rank, world_rank, world_size, cfg)
+    # ipdb.set_trace()
 
     if cfg.ckpt is not None:
         # run eval only
