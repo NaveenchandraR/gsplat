@@ -100,9 +100,9 @@ class Config:
     disable_video: bool = False
 
     # Initialization strategy
-    init_type: str = "sfm"
+    init_type: str = "random"
     # Initial number of GSs. Ignored if using sfm
-    init_num_pts: int = 100_000
+    init_num_pts: int = 10_000
     # Initial extent of GSs as a multiple of the camera extent. Ignored if using sfm
     init_extent: float = 3.0
     # Degree of spherical harmonics
@@ -728,7 +728,7 @@ class Runner:
                 trainloader_iter = iter(trainloader)
                 data = next(trainloader_iter)
 
-            # ipdb.set_trace()
+            ipdb.set_trace()
             camtoworlds = camtoworlds_gt = data["camtoworld"].to(device)  # [1, 4, 4]
             Ks = data["K"].to(device)  # [1, 3, 3]
             pixels = data["image"].to(device) / 255.0  # [1, H, W, 3]
