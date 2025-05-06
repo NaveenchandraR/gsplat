@@ -33,7 +33,6 @@ from utils import AppearanceOptModule, CameraOptModule, knn, rgb_to_sh, set_rand
 
 import sys
 
-sys.path.append("/data/naveen_ankit_phd/nerfstudio/gsplat")
 from gsplat.exporter import export_splats
 from gsplat.compression import PngCompression
 from gsplat.distributed import cli
@@ -85,7 +84,7 @@ class Config:
     steps_scaler: float = 1.0
 
     # Number of training steps
-    max_steps: int = 30_000
+    max_steps: int = 1
     # max_steps: int = 1
     # Steps to evaluate the model
     # eval_steps: List[int] = field(default_factory=lambda: [7_000, 30_000])
@@ -176,6 +175,11 @@ class Config:
     tb_save_image: bool = False
 
     lpips_net: Literal["vgg", "alex"] = "alex"
+
+    all_imgs_path = None
+    input_indices = None
+    c2ws = None
+    Ks = None
 
     def adjust_steps(self, factor: float):
         self.eval_steps = [int(i * factor) for i in self.eval_steps]
@@ -322,6 +326,9 @@ class Runner:
         self.ply_dir = f"{cfg.result_dir}/ply"
         os.makedirs(self.ply_dir, exist_ok=True)
 
+        # Mkdir for trajectory latent renders
+        os.makedirs(f"{cfg.result_dir}/trajectory_latents", exist_ok=True)
+
         # Tensorboard
         self.writer = SummaryWriter(log_dir=f"{cfg.result_dir}/tb")
 
@@ -329,8 +336,10 @@ class Runner:
         self.parser = Parser(
             data_dir=cfg.data_dir,
             factor=cfg.data_factor,
-            normalize=cfg.normalize_world_space,
-            test_every=cfg.test_every,
+            all_imgs_path=cfg.all_imgs_path,
+            input_indices=cfg.input_indices,
+            c2ws=cfg.c2ws,
+            Ks=cfg.Ks,
         )
         self.trainset = Dataset(
             self.parser,
@@ -728,7 +737,7 @@ class Runner:
                 trainloader_iter = iter(trainloader)
                 data = next(trainloader_iter)
 
-            ipdb.set_trace()
+            # ipdb.set_trace()
             camtoworlds = camtoworlds_gt = data["camtoworld"].to(device)  # [1, 4, 4]
             Ks = data["K"].to(device)  # [1, 3, 3]
             pixels = data["image"].to(device) / 255.0  # [1, H, W, 3]
@@ -1049,6 +1058,9 @@ class Runner:
         )
         ellipse_time = 0
         metrics = defaultdict(list)
+        
+        trajectory_latents = []
+
         for i, data in enumerate(valloader):
             camtoworlds = data["camtoworld"].to(device)
             Ks = data["K"].to(device)
@@ -1084,6 +1096,8 @@ class Runner:
             canvas_list = [pixels_image, colors_image]
             # ipdb.set_trace()
 
+            trajectory_latents.append(colors_latent.permute(0, 3, 1, 2))
+
             if world_rank == 0:
                 # write images
                 canvas = torch.cat(canvas_list, dim=2).squeeze(0).cpu().numpy()
@@ -1092,14 +1106,14 @@ class Runner:
                     f"{self.render_dir}/{stage}_step{step}_{i:04d}.png",
                     canvas,
                 )
-                torch.save(
-                    colors_latent, 
-                    f"{self.render_dir}/{stage}_step{step}_colors_latent_{i:04d}.pt"
-                )
-                torch.save(
-                    pixels_latent, 
-                    f"{self.render_dir}/{stage}_step{step}_pixels_latent_{i:04d}.pt"
-                )
+                # torch.save(
+                #     colors_latent, 
+                #     f"{self.render_dir}/{stage}_step{step}_colors_latent_{i:04d}.pt"
+                # )
+                # torch.save(
+                #     pixels_latent, 
+                #     f"{self.render_dir}/{stage}_step{step}_pixels_latent_{i:04d}.pt"
+                # )
 
                 # ipdb.set_trace()
                 pixels_p = pixels_image.permute(0, 3, 1, 2)  # [1, 3, H, W]
@@ -1112,6 +1126,13 @@ class Runner:
                     cc_colors = color_correct(colors_image, pixels_image)
                     cc_colors_p = cc_colors.permute(0, 3, 1, 2)  # [1, 3, H, W]
                     metrics["cc_psnr"].append(self.psnr(cc_colors_p, pixels_p))
+
+        ipdb.set_trace()
+        trajectory_latents = torch.cat(trajectory_latents, dim=0)
+        torch.save(trajectory_latents, 
+                   f"{cfg.result_dir}/trajectory_latents/trajectory_latent_renders.pt"
+                   )
+
 
         if world_rank == 0:
             ellipse_time /= len(valloader)
@@ -1366,6 +1387,7 @@ if __name__ == "__main__":
             ),
         ),
     }
+    ipdb.set_trace()
     cfg = tyro.extras.overridable_config_cli(configs)
     cfg.adjust_steps(cfg.steps_scaler)
 

@@ -20,10 +20,16 @@ def encode_images(scene_dir: list):
     # Target Latent resolution
     target_size = (72, 72)
 
-    images = sorted(glob.glob(f"{scene_dir}/images/*"))
+    image_extensions = ('.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.webp')
+    images = [f for f in glob.glob(f"{scene_dir}/images/*") if f.lower().endswith(image_extensions)]
+    # import ipdb; ipdb.set_trace()
     os.makedirs(f"{scene_dir}/latents", exist_ok=True)
 
     for image_path in tqdm(images, desc="Encoding images"):
+        latent_save_path = os.path.splitext(image_path.replace("images", "latents"))[0] + ".pt"
+        if os.path.exists(latent_save_path):
+            continue  # Skip if latent already exists
+        
         image = iio.imread(image_path)
         image_tensor = torch.from_numpy(np.array(image)).float() / 255.0  # [H, W, C]
         image_tensor = image_tensor.permute(2, 0, 1).unsqueeze(0).to(device)
@@ -34,7 +40,6 @@ def encode_images(scene_dir: list):
         # Resize latent according to the desired shape
         encoded_resized = F.interpolate(encoded, target_size, mode='bilinear', align_corners=False)
 
-        latent_save_path = os.path.splitext(image_path.replace("images", "latents"))[0] + ".pt"
         torch.save(encoded_resized, latent_save_path)
 
     del AE

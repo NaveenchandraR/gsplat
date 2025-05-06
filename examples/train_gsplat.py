@@ -18,7 +18,7 @@ import yaml
 
 import sys
 
-sys.path.append("./third_party/gsplat/examples")
+sys.path.append("/data/naveen_ankit_phd/personal/gsplat/examples")
 
 from datasets.colmap import Dataset, Parser
 from datasets.traj import (
@@ -79,7 +79,11 @@ def opengl_to_colmap_extrinsics(c2ws: List[torch.Tensor]) -> List[torch.Tensor]:
         R_colmap = T @ R
         t_colmap = T @ t
         c2w_colmap = torch.cat([R_colmap, t_colmap.unsqueeze(1)], dim=1)
+        bottom_row = torch.tensor([[0.0, 0.0, 0.0, 1.0]], dtype=c2w.dtype, device=c2w.device)
+        c2w_colmap = torch.cat([c2w_colmap, bottom_row], dim=0)  # [4, 4]
         c2ws_colmap.append(c2w_colmap)
+
+    return c2ws_colmap
 
 
 def main(local_rank: int, world_rank, world_size: int, cfg: Config):
@@ -121,37 +125,41 @@ def train_gaussians_from_input(
         config_name: Literal["default", "mcmc"] = "default",
         config_overrides: Optional[dict] = None,
 ):
-    training_view_paths = all_imgs_path[input_indices]
-    training_c2ws = c2ws[input_indices]
-    training_Ks = Ks[input_indices]
+    # ipdb.set_trace()
 
     # Convert OpenGL to Colmap
-    training_c2ws = opengl_to_colmap_extrinsics(training_c2ws)
     c2ws = opengl_to_colmap_extrinsics(c2ws)
-    ipdb.set_trace()
+    # ipdb.set_trace()
 
-    # Config objects we can choose between.
-    # Each is a tuple of (CLI description, config object).
-    configs = {
-        "default": (
-            "Gaussian splatting training using densification heuristics from the original paper.",
-            Config(
+    # # Config objects we can choose between.
+    # # Each is a tuple of (CLI description, config object).
+    # configs = {
+    #     "default": (
+    #         "Gaussian splatting training using densification heuristics from the original paper.",
+    #         Config(
+    #             strategy=DefaultStrategy(verbose=True),
+    #         ),
+    #     ),
+    #     "mcmc": (
+    #         "Gaussian splatting training using densification from the paper '3D Gaussian Splatting as Markov Chain Monte Carlo'.",
+    #         Config(
+    #             init_opa=0.5,
+    #             init_scale=0.1,
+    #             opacity_reg=0.01,
+    #             scale_reg=0.01,
+    #             strategy=MCMCStrategy(verbose=True),
+    #         ),
+    #     ),
+    # }
+    cfg = Config(
                 strategy=DefaultStrategy(verbose=True),
-            ),
-        ),
-        "mcmc": (
-            "Gaussian splatting training using densification from the paper '3D Gaussian Splatting as Markov Chain Monte Carlo'.",
-            Config(
-                init_opa=0.5,
-                init_scale=0.1,
-                opacity_reg=0.01,
-                scale_reg=0.01,
-                strategy=MCMCStrategy(verbose=True),
-            ),
-        ),
-    }
-    # Get the base config
-    cfg = configs[config_name]
+            )
+    # ipdb.set_trace()
+
+    cfg.all_imgs_path = all_imgs_path
+    cfg.input_indices = input_indices
+    cfg.c2ws = np.array([t.cpu().numpy() for t in c2ws])
+    cfg.Ks = np.array([t.cpu().numpy() for t in Ks])
 
     # Apply overrides, if any
     if config_overrides:
@@ -159,6 +167,7 @@ def train_gaussians_from_input(
             setattr(cfg, k, v)
 
     cfg.adjust_steps(cfg.steps_scaler)
+    # ipdb.set_trace()
 
     cli(main, cfg, verbose=True)
 

@@ -11,13 +11,6 @@ from pycolmap import SceneManager
 from tqdm import tqdm
 from typing_extensions import assert_never
 
-from examples.datasets.encode import image_path
-from .normalize import (
-    align_principal_axes,
-    similarity_from_cameras,
-    transform_cameras,
-    transform_points,
-)
 import imageio.v3 as iio
 
 import torch
@@ -376,7 +369,7 @@ class Parser:
 
         self.input_indices = input_indices
         self.image_paths = all_imgs_path  # List[str], (num_images,)
-        self.camtoworlds = c2ws  # np.ndarray, (num_images, 4, 4)
+        self.camtoworlds = np.array(c2ws)  # np.ndarray, (num_images, 4, 4)
         self.camera_ids = list(range(len(c2ws)))
         self.image_names = [name.split("/")[-1] for name in self.image_paths]
         self.pt_paths = [
@@ -399,6 +392,12 @@ class Parser:
         self.mask_dict = mask_dict  # Dict of camera_id -> mask
         self.Ks_dict = Ks_dict  # Dict of camera_id -> K
 
+        # size of the scene measured by cameras
+        camera_locations = self.camtoworlds[:, :3, 3]
+        scene_center = np.mean(camera_locations, axis=0)
+        dists = np.linalg.norm(camera_locations - scene_center, axis=1)
+        self.scene_scale = np.max(dists)
+
 
 
 class Dataset:
@@ -418,7 +417,7 @@ class Dataset:
         if split == "train":
             self.indices = self.parser.input_indices
         else:
-            self.indices = [x for x in self.parser.camera_ids not in self.parser.input_indices]
+            self.indices = self.parser.camera_ids
 
     def __len__(self):
         return len(self.indices)
@@ -428,7 +427,7 @@ class Dataset:
         image = imageio.imread(self.parser.image_paths[index])[..., :3]
         camera_id = self.parser.camera_ids[index]
         K = self.parser.Ks_dict[camera_id].copy()  # undistorted K
-        params = self.parser.params_dict[camera_id]
+        # params = self.parser.params_dict[camera_id]
         camtoworlds = self.parser.camtoworlds[index]
         mask = self.parser.mask_dict[camera_id]
         latent_feature = torch.load(self.parser.pt_paths[index], map_location='cpu')
@@ -439,7 +438,7 @@ class Dataset:
                         unsqueeze(0).permute(0, 3, 1, 2) / 255.0)  # [1, C, H, W]
 
         resized_image = F.interpolate(image_tensor, size=(72, 72), mode='bilinear', align_corners=False)  # [1, C, 72, 72]
-        resized_image = resized_image.permute(0, 2, 3, 1) # Back to [1, 72, 72, C]
+        resized_image = resized_image.permute(0, 2, 3, 1).squeeze(0) # Back to [1, 72, 72, C]
 
         data = {
             "K": torch.from_numpy(K).float(),
