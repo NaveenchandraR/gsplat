@@ -21,6 +21,8 @@ from datasets.traj import (
     generate_interpolated_path,
     generate_spiral_path,
 )
+from run_vggt import run_vggt
+
 from fused_ssim import fused_ssim
 from lib_bilagrid import BilateralGrid, color_correct, slice, total_variation_loss
 from torch import Tensor
@@ -84,24 +86,24 @@ class Config:
     steps_scaler: float = 1.0
 
     # Number of training steps
-    max_steps: int = 1
+    max_steps: int = 30_000
     # max_steps: int = 1
     # Steps to evaluate the model
     # eval_steps: List[int] = field(default_factory=lambda: [7_000, 30_000])
-    eval_steps: List[int] = field(default_factory=lambda: [1, 7_000, 30_000])
+    eval_steps: List[int] = field(default_factory=lambda: [7_000, 30_000])
     # Steps to save the model
     save_steps: List[int] = field(default_factory=lambda: [7_000, 30_000])
     # Whether to save ply file (storage size can be large)
     save_ply: bool = False
     # Steps to save the model as ply
-    ply_steps: List[int] = field(default_factory=lambda: [7_000, 30_000])
+    ply_steps: List[int] = field(default_factory=lambda: [7_000, 15_000, 30_000])
     # Whether to disable video generation during training and evaluation
     disable_video: bool = False
 
     # Initialization strategy
-    init_type: str = "random"
+    init_type: str = "vggt"
     # Initial number of GSs. Ignored if using sfm
-    init_num_pts: int = 10_000
+    init_num_pts: int = 100_000
     # Initial extent of GSs as a multiple of the camera extent. Ignored if using sfm
     init_extent: float = 3.0
     # Degree of spherical harmonics
@@ -165,7 +167,7 @@ class Config:
     bilateral_grid_shape: Tuple[int, int, int] = (16, 16, 8)
 
     # Enable depth loss. (experimental)
-    depth_loss: bool = False # TODO: Change here to False
+    depth_loss: bool = False  # TODO: Change here to False
     # Weight for depth loss
     depth_lambda: float = 1e-2
 
@@ -203,32 +205,42 @@ class Config:
 
 
 def create_splats_with_optimizers(
-        parser: Parser,
-        init_type: str = "sfm",
-        init_num_pts: int = 100_000,
-        init_extent: float = 3.0,
-        init_opacity: float = 0.1,
-        init_scale: float = 1.0,
-        scene_scale: float = 1.0,
-        sh_degree: int = 3,
-        sparse_grad: bool = False,
-        visible_adam: bool = False,
-        batch_size: int = 1,
-        feature_dim: Optional[int] = None,
-        device: str = "cuda",
-        world_rank: int = 0,
-        world_size: int = 1,
+    parser: Parser,
+    init_type: str = "sfm",
+    init_num_pts: int = 100_000,
+    init_extent: float = 3.0,
+    init_opacity: float = 0.1,
+    init_scale: float = 1.0,
+    scene_scale: float = 1.0,
+    sh_degree: int = 3,
+    sparse_grad: bool = False,
+    visible_adam: bool = False,
+    batch_size: int = 1,
+    feature_dim: Optional[int] = None,
+    device: str = "cuda",
+    world_rank: int = 0,
+    world_size: int = 1,
 ) -> Tuple[torch.nn.ParameterDict, Dict[str, torch.optim.Optimizer]]:
+    # ipdb.set_trace()
     if init_type == "sfm":
         points = torch.from_numpy(parser.points).float()
         rgbs = torch.from_numpy(parser.points_rgb / 255.0).float()
+    elif init_type == "vggt":
+        # all_image_paths = parser.image_paths
+        # input_indeces = parser.input_indices
+        # image_paths = [all_image_paths[i] for i in input_indeces]
+        image_paths = [parser.image_paths[i] for i in parser.input_indices]
+        c2ws = parser.c2ws[parser.input_indices]
+        Ks = parser.Ks[parser.input_indices]
+        points = run_vggt(image_paths, c2ws, Ks)
+        rgbs = torch.rand((points.shape[0], 3))
     elif init_type == "random":
         points = init_extent * scene_scale * (torch.rand((init_num_pts, 3)) * 2 - 1)
         rgbs = torch.rand((init_num_pts, 3))
     else:
         raise ValueError("Please specify a correct init_type: sfm or random")
 
-    # # ipdb.set_trace()
+    # ipdb.set_trace()
     # latent_feature_tensor = torch.randn(rgbs.shape[0], 4) # Adding another 4 dimension to rgb values
     # rgbs = torch.cat([rgbs, latent_feature_tensor], dim=1)  # [N, 7]
     # # ipdb.set_trace()
@@ -303,7 +315,7 @@ class Runner:
     """Engine for training and testing."""
 
     def __init__(
-            self, local_rank: int, world_rank, world_size: int, cfg: Config
+        self, local_rank: int, world_rank, world_size: int, cfg: Config
     ) -> None:
         set_random_seed(42 + local_rank)
 
@@ -478,15 +490,15 @@ class Runner:
             )
 
     def rasterize_splats(
-            self,
-            camtoworlds: Tensor,
-            Ks: Tensor,
-            width: int,
-            height: int,
-            masks: Optional[Tensor] = None,
-            rasterize_mode: Optional[Literal["classic", "antialiased"]] = None,
-            camera_model: Optional[Literal["pinhole", "ortho", "fisheye"]] = None,
-            **kwargs,
+        self,
+        camtoworlds: Tensor,
+        Ks: Tensor,
+        width: int,
+        height: int,
+        masks: Optional[Tensor] = None,
+        rasterize_mode: Optional[Literal["classic", "antialiased"]] = None,
+        camera_model: Optional[Literal["pinhole", "ortho", "fisheye"]] = None,
+        **kwargs,
     ) -> Tuple[Tensor, Tensor, Dict]:
         means = self.splats["means"]  # [N, 3]
         # quats = F.normalize(self.splats["quats"], dim=-1)  # [N, 4]
@@ -540,15 +552,15 @@ class Runner:
         return render_colors, render_alphas, info
 
     def rasterize_splats_new(
-            self,
-            camtoworlds: Tensor,
-            Ks: Tensor,
-            width: int,
-            height: int,
-            masks: Optional[Tensor] = None,
-            rasterize_mode: Optional[Literal["classic", "antialiased"]] = None,
-            camera_model: Optional[Literal["pinhole", "ortho", "fisheye"]] = None,
-            **kwargs,
+        self,
+        camtoworlds: Tensor,
+        Ks: Tensor,
+        width: int,
+        height: int,
+        masks: Optional[Tensor] = None,
+        rasterize_mode: Optional[Literal["classic", "antialiased"]] = None,
+        camera_model: Optional[Literal["pinhole", "ortho", "fisheye"]] = None,
+        **kwargs,
     ) -> Tuple[Tensor, Tensor, Dict]:
         means = self.splats["means"]  # [N, 3]
         # quats = F.normalize(self.splats["quats"], dim=-1)  # [N, 4]
@@ -742,7 +754,7 @@ class Runner:
             Ks = data["K"].to(device)  # [1, 3, 3]
             pixels = data["image"].to(device) / 255.0  # [1, H, W, 3]
             num_train_rays_per_step = (
-                    pixels.shape[0] * pixels.shape[1] * pixels.shape[2]
+                pixels.shape[0] * pixels.shape[1] * pixels.shape[2]
             )
             image_ids = data["image_id"].to(device)
             masks = data["mask"].to(device) if "mask" in data else None  # [1, H, W]
@@ -818,7 +830,7 @@ class Runner:
             # ipdb.set_trace()
             loss = l1loss * (1.0 - cfg.ssim_lambda) + ssimloss * cfg.ssim_lambda
             if latent_loss is not None:
-                loss += 3*latent_loss
+                loss += 1 * latent_loss
             if cfg.depth_loss:
                 # query depths from depth map
                 points = torch.stack(
@@ -845,20 +857,24 @@ class Runner:
             # regularizations
             if cfg.opacity_reg > 0.0:
                 loss = (
-                        loss
-                        + cfg.opacity_reg
-                        * torch.abs(torch.sigmoid(self.splats["opacities"])).mean()
+                    loss
+                    + cfg.opacity_reg
+                    * torch.abs(torch.sigmoid(self.splats["opacities"])).mean()
                 )
             if cfg.scale_reg > 0.0:
                 loss = (
-                        loss
-                        + cfg.scale_reg * torch.abs(torch.exp(self.splats["scales"])).mean()
+                    loss
+                    + cfg.scale_reg * torch.abs(torch.exp(self.splats["scales"])).mean()
                 )
 
             # ipdb.set_trace()
             loss.backward()
 
-            desc = f"loss={loss.item():.3f}| " f"sh degree={sh_degree_to_use}| " f"latent_loss={latent_loss.item():.3f}| "
+            desc = (
+                f"loss={loss.item():.3f}| "
+                f"sh degree={sh_degree_to_use}| "
+                f"latent_loss={latent_loss.item():.3f}| "
+            )
             if cfg.depth_loss:
                 desc += f"depth loss={depthloss.item():.6f}| "
             if cfg.pose_opt and cfg.pose_noise:
@@ -877,7 +893,7 @@ class Runner:
             #     )
 
             if world_rank == 0 and cfg.tb_every > 0 and step % cfg.tb_every == 0:
-                mem = torch.cuda.max_memory_allocated() / 1024 ** 3
+                mem = torch.cuda.max_memory_allocated() / 1024**3
                 self.writer.add_scalar("train/loss", loss.item(), step)
                 self.writer.add_scalar("train/l1loss", l1loss.item(), step)
                 self.writer.add_scalar("train/ssimloss", ssimloss.item(), step)
@@ -895,7 +911,7 @@ class Runner:
 
             # save checkpoint before updating the model
             if step in [i - 1 for i in cfg.save_steps] or step == max_steps - 1:
-                mem = torch.cuda.max_memory_allocated() / 1024 ** 3
+                mem = torch.cuda.max_memory_allocated() / 1024**3
                 stats = {
                     "mem": mem,
                     "ellipse_time": time.time() - global_tic,
@@ -903,8 +919,8 @@ class Runner:
                 }
                 print("Step: ", step, stats)
                 with open(
-                        f"{self.stats_dir}/train_step{step:04d}_rank{self.world_rank}.json",
-                        "w",
+                    f"{self.stats_dir}/train_step{step:04d}_rank{self.world_rank}.json",
+                    "w",
                 ) as f:
                     json.dump(stats, f)
                 data = {"step": step, "splats": self.splats.state_dict()}
@@ -922,9 +938,8 @@ class Runner:
                     data, f"{self.ckpt_dir}/ckpt_{step}_rank{self.world_rank}.pt"
                 )
             if (
-                    step in [i - 1 for i in cfg.ply_steps] or step == max_steps - 1
+                step in [i - 1 for i in cfg.ply_steps] or step == max_steps - 1
             ) and cfg.save_ply:
-
                 if self.cfg.app_opt:
                     # eval at origin to bake the appeareance into the colors
                     rgb = self.app_module(
@@ -1035,7 +1050,7 @@ class Runner:
                 self.viewer.lock.release()
                 num_train_steps_per_sec = 1.0 / (time.time() - tic)
                 num_train_rays_per_sec = (
-                        num_train_rays_per_step * num_train_steps_per_sec
+                    num_train_rays_per_step * num_train_steps_per_sec
                 )
                 # Update the viewer state.
                 self.viewer.render_tab_state.num_train_rays_per_sec = (
@@ -1058,7 +1073,7 @@ class Runner:
         )
         ellipse_time = 0
         metrics = defaultdict(list)
-        
+
         trajectory_latents = []
 
         for i, data in enumerate(valloader):
@@ -1086,8 +1101,8 @@ class Runner:
             ellipse_time += time.time() - tic
 
             # ipdb.set_trace()
-            colors_image = colors[:,:,:,:3]
-            colors_latent = colors[:,:,:,3:]
+            colors_image = colors[:, :, :, :3]
+            colors_latent = colors[:, :, :, 3:]
             pixels_image = pixels
             pixels_latent = latent_feature
 
@@ -1107,12 +1122,12 @@ class Runner:
                     canvas,
                 )
                 # torch.save(
-                #     colors_latent, 
-                #     f"{self.render_dir}/{stage}_step{step}_colors_latent_{i:04d}.pt"
+                #     colors_latent,
+                #     f"{self.render_dir}/{stage}_step{step}_colors_latent_{i:04d}.pt",
                 # )
                 # torch.save(
-                #     pixels_latent, 
-                #     f"{self.render_dir}/{stage}_step{step}_pixels_latent_{i:04d}.pt"
+                #     pixels_latent,
+                #     f"{self.render_dir}/{stage}_step{step}_pixels_latent_{i:04d}.pt",
                 # )
 
                 # ipdb.set_trace()
@@ -1127,12 +1142,12 @@ class Runner:
                     cc_colors_p = cc_colors.permute(0, 3, 1, 2)  # [1, 3, H, W]
                     metrics["cc_psnr"].append(self.psnr(cc_colors_p, pixels_p))
 
-        ipdb.set_trace()
+        # ipdb.set_trace()
         trajectory_latents = torch.cat(trajectory_latents, dim=0)
-        torch.save(trajectory_latents, 
-                   f"{cfg.result_dir}/trajectory_latents/trajectory_latent_renders.pt"
-                   )
-
+        torch.save(
+            trajectory_latents,
+            f"{cfg.result_dir}/trajectory_latents/trajectory_latent_renders.pt",
+        )
 
         if world_rank == 0:
             ellipse_time /= len(valloader)
@@ -1206,7 +1221,7 @@ class Runner:
         os.makedirs(video_dir, exist_ok=True)
         writer = imageio.get_writer(f"{video_dir}/traj_{step}.mp4", fps=30)
         for i in tqdm.trange(len(camtoworlds_all), desc="Rendering trajectory"):
-            camtoworlds = camtoworlds_all[i: i + 1]
+            camtoworlds = camtoworlds_all[i : i + 1]
             Ks = K[None]
 
             renders, _, _ = self.rasterize_splats_new(
@@ -1251,7 +1266,7 @@ class Runner:
 
     @torch.no_grad()
     def _viewer_render_fn(
-            self, camera_state: CameraState, render_tab_state: RenderTabState
+        self, camera_state: CameraState, render_tab_state: RenderTabState
     ):
         assert isinstance(render_tab_state, GsplatRenderTabState)
         if render_tab_state.preview_render:
@@ -1283,7 +1298,7 @@ class Runner:
             radius_clip=render_tab_state.radius_clip,
             eps2d=render_tab_state.eps2d,
             backgrounds=torch.tensor([render_tab_state.backgrounds], device=self.device)
-                        / 255.0,
+            / 255.0,
             render_mode=RENDER_MODE_MAP[render_tab_state.render_mode],
             rasterize_mode=render_tab_state.rasterize_mode,
             camera_model=render_tab_state.camera_model,
@@ -1348,10 +1363,10 @@ def main(local_rank: int, world_rank, world_size: int, cfg: Config):
     else:
         runner.train()
 
-    runner.viewer.complete()
-    if not cfg.disable_viewer:
-        print("Viewer running... Ctrl+C to exit.")
-        time.sleep(1000000)
+    # runner.viewer.complete()
+    # if not cfg.disable_viewer:
+    #     print("Viewer running... Ctrl+C to exit.")
+    #     time.sleep(1000000)
 
 
 if __name__ == "__main__":

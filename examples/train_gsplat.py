@@ -20,39 +20,39 @@ import sys
 
 sys.path.append("/data/naveen_ankit_phd/personal/gsplat/examples")
 
-from datasets.colmap import Dataset, Parser
-from datasets.traj import (
-    generate_ellipse_path_z,
-    generate_interpolated_path,
-    generate_spiral_path,
-)
-from fused_ssim import fused_ssim
-from lib_bilagrid import BilateralGrid, color_correct, slice, total_variation_loss
-from torch import Tensor
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.tensorboard import SummaryWriter
-from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
-from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
+# from datasets.colmap import Dataset, Parser
+# from datasets.traj import (
+#     generate_ellipse_path_z,
+#     generate_interpolated_path,
+#     generate_spiral_path,
+# )
+# from fused_ssim import fused_ssim
+# from lib_bilagrid import BilateralGrid, color_correct, slice, total_variation_loss
+# from torch import Tensor
+# from torch.nn.parallel import DistributedDataParallel as DDP
+# from torch.utils.tensorboard import SummaryWriter
+# from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
+# from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 from typing_extensions import Literal, assert_never
-from utils import AppearanceOptModule, CameraOptModule, knn, rgb_to_sh, set_random_seed
+# from utils import AppearanceOptModule, CameraOptModule, knn, rgb_to_sh, set_random_seed
 
 import sys
 
 # sys.path.append("/data/naveen_ankit_phd/nerfstudio/gsplat")
-from gsplat.exporter import export_splats
-from gsplat.compression import PngCompression
+# from gsplat.exporter import export_splats
+# from gsplat.compression import PngCompression
 from gsplat.distributed import cli
-from gsplat.optimizers import SelectiveAdam
-from gsplat.rendering import rasterization
+# from gsplat.optimizers import SelectiveAdam
+# from gsplat.rendering import rasterization
 from gsplat.strategy import DefaultStrategy, MCMCStrategy
-from gsplat.utils import save_ply
-from gsplat_viewer import GsplatViewer, GsplatRenderTabState
-from nerfview import CameraState, RenderTabState, apply_float_colormap
+# from gsplat.utils import save_ply
+# from gsplat_viewer import GsplatViewer, GsplatRenderTabState
+# from nerfview import CameraState, RenderTabState, apply_float_colormap
 
 # Import classes
 from simple_trainer import Runner, Config
 # import functions
-from simple_trainer import create_splats_with_optimizers
+# from simple_trainer import create_splats_with_optimizers
 
 import ipdb
 
@@ -86,6 +86,74 @@ def opengl_to_colmap_extrinsics(c2ws: List[torch.Tensor]) -> List[torch.Tensor]:
     return c2ws_colmap
 
 
+# def resize_intrinsics(K_list, original_size=(520, 780), new_size=(360, 360)):
+#     """
+#     Resize a list of camera intrinsics tensors to match a new image resolution.
+    
+#     Args:
+#         K_list (list of torch.Tensor): List of [3,3] camera intrinsics.
+#         original_size (tuple): (H, W) of the original image resolution.
+#         new_size (tuple): (H, W) of the new image resolution.
+        
+#     Returns:
+#         resized_Ks (list of torch.Tensor): Intrinsics adjusted to the new resolution.
+#     """
+#     orig_h, orig_w = original_size
+#     new_h, new_w = new_size
+    
+#     scale_x = float(new_w) / float(orig_w)
+#     scale_y = float(new_h) / float(orig_h)
+
+#     resized_Ks = []
+#     for K in K_list:
+#         K_new = K.clone()
+#         K_new[0, 0] *= scale_x  # fx
+#         K_new[0, 2] *= scale_x  # cx
+#         K_new[1, 1] *= scale_y  # fy
+#         K_new[1, 2] *= scale_y  # cy
+#         resized_Ks.append(K_new)
+
+#     return resized_Ks
+
+def resize_intrinsics(K_list, original_size=(576, 576), new_size=(360, 360)):
+    """
+    Convert and resize OpenGL-style normalized intrinsics to COLMAP-style pixel intrinsics.
+
+    Args:
+        K_list (list of torch.Tensor): List of [3,3] intrinsics in OpenGL normalized format (fx, fy, cx, cy ∈ [0,1]).
+        original_size (tuple): (H, W) of the original image resolution.
+        new_size (tuple): (H, W) of the new image resolution.
+
+    Returns:
+        resized_Ks (list of torch.Tensor): Intrinsics converted to pixel coordinates and resized to new resolution.
+    """
+    orig_h, orig_w = original_size
+    new_h, new_w = new_size
+
+    scale_x = float(new_w) / float(orig_w)
+    scale_y = float(new_h) / float(orig_h)
+
+    resized_Ks = []
+    for K in K_list:
+        K = K.clone()
+
+        # Convert from normalized (OpenGL) to original pixel resolution
+        K[0, 0] *= orig_w  # fx
+        K[1, 1] *= orig_h  # fy
+        K[0, 2] *= orig_w  # cx
+        K[1, 2] *= orig_h  # cy
+
+        # Rescale to new resolution
+        K[0, 0] *= scale_x
+        K[1, 1] *= scale_y
+        K[0, 2] *= scale_x
+        K[1, 2] *= scale_y
+
+        resized_Ks.append(K)
+
+    return resized_Ks
+
+
 def main(local_rank: int, world_rank, world_size: int, cfg: Config):
     if world_size > 1 and not cfg.disable_viewer:
         cfg.disable_viewer = True
@@ -105,16 +173,16 @@ def main(local_rank: int, world_rank, world_size: int, cfg: Config):
             runner.splats[k].data = torch.cat([ckpt["splats"][k] for ckpt in ckpts])
         step = ckpts[0]["step"]
         runner.eval(step=step)
-        runner.render_traj(step=step)
+        # runner.render_traj(step=step)
         if cfg.compression is not None:
             runner.run_compression(step=step)
     else:
         runner.train()
 
-    runner.viewer.complete()
-    if not cfg.disable_viewer:
-        print("Viewer running... Ctrl+C to exit.")
-        time.sleep(10)
+    # runner.viewer.complete()
+    # if not cfg.disable_viewer:
+    #     print("Viewer running... Ctrl+C to exit.")
+    #     time.sleep(10)
 
 
 def train_gaussians_from_input(
@@ -129,6 +197,8 @@ def train_gaussians_from_input(
 
     # Convert OpenGL to Colmap
     c2ws = opengl_to_colmap_extrinsics(c2ws)
+    # Change Camera Intrinsice
+    Ks = resize_intrinsics(Ks)
     # ipdb.set_trace()
 
     # # Config objects we can choose between.
